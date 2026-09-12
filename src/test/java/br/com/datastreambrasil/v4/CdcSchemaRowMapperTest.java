@@ -20,7 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-class RowMapperTest {
+class CdcSchemaRowMapperTest {
 
     /** Column names as Snowflake reports them for unquoted identifiers. */
     private static final List<String> INGEST_COLUMNS = List.of(
@@ -50,8 +50,8 @@ class RowMapperTest {
                 .build();
     }
 
-    private RowMapper mapper() {
-        return new RowMapper(INGEST_COLUMNS, List.of("TS"), List.of("DT"), List.of("TM"));
+    private CdcSchemaRowMapper mapper() {
+        return new CdcSchemaRowMapper(INGEST_COLUMNS, List.of(), List.of("TS"), List.of("DT"), List.of("TM"));
     }
 
     private SinkRecord record(String op, String id, String name, Long ts, Integer dt, Long tm, long offset) {
@@ -128,7 +128,7 @@ class RowMapperTest {
     @Test
     void columnsAbsentFromTheIngestTableAreNeverEmitted() {
         // NAME is not part of the ingest table here, so it must not reach the pipe
-        var narrow = new RowMapper(List.of("ID", "IH_OP"), List.of(), List.of(), List.of());
+        var narrow = new CdcSchemaRowMapper(List.of("ID", "IH_OP"), List.of(), List.of(), List.of(), List.of());
         var row = narrow.toRow(record("c", "1", "Name 1", null, null, null, 0L), "block-1");
 
         assertEquals(2, row.size());

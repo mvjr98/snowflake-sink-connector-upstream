@@ -12,14 +12,30 @@ spec:
   replicas: 1
   bootstrapServers: host.minikube.internal:9093
 
+  # The v4 connector's SDK extracts a ~29 MiB Rust core (cyclone_shared.so) into
+  # java.io.tmpdir and dlopen()s it. Strimzi's /tmp is a memory-backed emptyDir defaulting to
+  # 5Mi, so the extraction fails with "No space left on device". Pick one of the two options
+  # below - both were verified on a k3d cluster running Strimzi 0.43 and OpenJDK 17.
+  #
+  # Option A (default here): give /tmp room. Works on any cluster, costs ~29 MiB of pod memory.
   template:
     pod:
-      # The v4 connector's SDK extracts a ~29 MiB Rust core into /tmp and dlopen()s it.
-      # Strimzi's /tmp is a memory-backed emptyDir defaulting to 5Mi, which is far too small:
-      # the extraction fails with "No space left on device" and the task dies with the
-      # unhelpful "Failed to load both main and test libraries".
-      # This is pod memory, so keep it just big enough.
       tmpDirSizeLimit: 128Mi
+
+  # Option B: extract onto disk instead, costing no pod memory. Only for clusters that already
+  # mount a writable volume - v3 writes its staging CSVs to /mnt/data, so where v3 runs this
+  # path exists. Point it at the mount itself: the JVM does not create java.io.tmpdir, and a
+  # missing directory fails with NoSuchFileException.
+  #
+  # The SDK reads no directory setting of its own and calls Files.createTempDirectory(prefix),
+  # which resolves through StaticProperty - frozen at VM start. So this has to be a startup
+  # flag; System.setProperty from the connector is ignored. Note it moves the temp directory
+  # for the whole JVM, every plugin included (v3 is unaffected: it uses tmp_data_folder).
+  #
+  # jvmOptions:
+  #   javaSystemProperties:
+  #     - name: java.io.tmpdir
+  #       value: /mnt/data
 
   logging:
     type: inline
@@ -105,7 +121,7 @@ spec:
       - name: snowflake-sink-connector-v4
         artifacts:
           - type: jar
-            url: https://github.com/mvjr98/snowflake-sink-connector-v4/releases/download/v4.0.3/snowflake-sink-connector-4.0.3.jar
+            url: https://github.com/mvjr98/snowflake-sink-connector-v4/releases/download/v4.0.4/snowflake-sink-connector-4.0.4.jar
           # keep only if your connector configs actually use these transforms
           - type: jar
             url: https://github.com/datastreambrasil/smt/releases/download/v1.0.2/smt-1.0.2.jar

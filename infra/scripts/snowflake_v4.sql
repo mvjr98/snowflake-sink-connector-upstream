@@ -23,9 +23,17 @@ CREATE TABLE IF NOT EXISTS EVENTS_INGEST (
     IH_TOPIC        VARCHAR(500),
     IH_PARTITION    NUMBER,
     IH_OFFSET       NUMBER,
-    IH_OP           VARCHAR(1),     -- Debezium op: c, r, u, d
+    IH_OP           VARCHAR(1),     -- operation: c, r, u, d
     IH_DATETIME     TIMESTAMP_NTZ,
     IH_BLOCKID      VARCHAR(36)     -- only used when ingestion_only = false
+
+    -- Optional, and only filled by the flat_json profile, from the headers of the same
+    -- name. Add them to record which source table a row came from; leave them out and the
+    -- headers are simply ignored. They are already in the default
+    -- exclude_ingest_additional_fields, so the final table does not need them - but the
+    -- dynamic table in step 5 has to EXCLUDE them as well.
+    -- , IH_SCHEMA    VARCHAR(255)
+    -- , IH_TABLE     VARCHAR(255)
 );
 
 -- The final table is only needed when ingestion_only = false.

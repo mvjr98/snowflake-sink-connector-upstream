@@ -1,0 +1,55 @@
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaConnector
+metadata:
+  name: sink-snowflake-v4-flatjson
+  labels:
+    strimzi.io/cluster: kconnect
+spec:
+  autoRestart:
+    enabled: true
+  class: br.com.datastreambrasil.v4.SnowflakeSinkConnector
+  tasksMax: 6
+  config:
+    topics: "inthub.dbo.pedidos"
+
+    # --- Record format --------------------------------------------------------
+    # flat_json: the row itself in the value as a flat JSON object, and the operation in a
+    # header. See https://docs.inthub.io/outputs/snowflake
+    #
+    #   Key:     {"ID":42}
+    #   Value:   {"ID":42,"CLIENTE":"ACME","TOTAL":249.90,"ATUALIZADO_EM":"2026-07-26T11:02:31Z"}
+    #   Headers: op=u  schema=dbo  table=pedidos
+    #
+    # op is r/c (insert), u (update) or d (delete) - the same four codes Debezium uses, so
+    # nothing downstream changes. A delete has no value: the key names the row.
+    profile: "flat_json"
+
+    # Rename the header if the producer sends something else, e.g. __op
+    # op_header: "op"
+
+    # --- Snowflake identity ---------------------------------------------------
+    url: "jdbc:snowflake://xxxxxx.snowflakecomputing.com?schema=LZ_IH&db=DATB200D&CLIENT_SESSION_KEEP_ALIVE=TRUE"
+    user: "SVC_KCONNECT"
+    password: "${secrets:kafka/snowflake-pat:token}"
+    schema: "LZ_IH"
+    table: "PEDIDOS"
+
+    # --- Mode -----------------------------------------------------------------
+    # true  -> rows land in PEDIDOS_INGEST and a Dynamic Table deduplicates them.
+    # false -> the connector also runs MERGE/DELETE into PEDIDOS, and then it needs a
+    #          primary key: it comes from the key JSON, or from pk_fields when the records
+    #          carry no key. Composite keys are comma separated.
+    ingestion_only: "true"
+    # pk_fields: "PEDIDO_ID,ITEM_ID"
+
+    # --- Converters -----------------------------------------------------------
+    # Flat JSON means no schema registry: schemas.enable must be false, on both sides.
+    # StringConverter and ByteArrayConverter also work - the connector parses the JSON
+    # itself - but this is the combination to prefer.
+    key.converter: "org.apache.kafka.connect.json.JsonConverter"
+    key.converter.schemas.enable: "false"
+    value.converter: "org.apache.kafka.connect.json.JsonConverter"
+    value.converter.schemas.enable: "false"
+
+    # Headers arrive as strings with the default converter; nothing else is needed.
+    # header.converter: "org.apache.kafka.connect.storage.SimpleHeaderConverter"

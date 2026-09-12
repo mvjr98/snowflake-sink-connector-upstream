@@ -22,6 +22,10 @@ import java.util.Map;
  *   <li>{@code ingestion_only=false} — after every commit cycle a MERGE/DELETE moves the block
  *       into the final table, like v3 did.</li>
  * </ul>
+ *
+ * <p>Two record formats, picked with {@code profile}: {@code cdc_schema} for a Debezium envelope
+ * carrying a schema, and {@code flat_json} for a flat JSON row with the operation in a header.
+ * Both produce the same ingest rows, so everything downstream is unchanged.
  */
 public class SnowflakeSinkConnector extends SinkConnector {
 
@@ -48,6 +52,8 @@ public class SnowflakeSinkConnector extends SinkConnector {
     // behaviour
     protected static final String CFG_INGESTION_ONLY = "ingestion_only";
     protected static final String CFG_PROFILE = "profile";
+    protected static final String CFG_OP_HEADER = "op_header";
+    protected static final String CFG_PK_FIELDS = "pk_fields";
 
     // carried over from v3
     protected static final String CFG_TIMESTAMP_FIELDS_CONVERT = "timestamp_fields_convert";
@@ -63,6 +69,7 @@ public class SnowflakeSinkConnector extends SinkConnector {
     protected static final String CFG_CONSUMER_OVERRIDE_MAX_POLL_INTERVAL_MS = "consumer.override.max.poll.interval.ms";
 
     protected static final String PROFILE_CDC_SCHEMA = "cdc_schema";
+    protected static final String PROFILE_FLAT_JSON = "flat_json";
 
     static final ConfigDef CONFIG_DEF = new ConfigDef()
         .define(CFG_SCHEMA_NAME, ConfigDef.Type.STRING, null, ConfigDef.Importance.HIGH,
@@ -112,7 +119,18 @@ public class SnowflakeSinkConnector extends SinkConnector {
             "If true, only stream into <table>_INGEST: no MERGE, no DELETE and no cleanup job. "
                 + "Deduplication is left to Snowflake (e.g. a Dynamic Table).")
         .define(CFG_PROFILE, ConfigDef.Type.STRING, PROFILE_CDC_SCHEMA, ConfigDef.Importance.HIGH,
-            "Record profile. Only 'cdc_schema' (Debezium Struct with schema) is implemented.")
+            "Record profile. 'cdc_schema' (the default) reads a Debezium envelope carrying a schema: "
+                + "the operation from its 'op' field and the row from 'after'/'before'. 'flat_json' "
+                + "reads the row itself from a flat JSON value and the operation from the '"
+                + CFG_OP_HEADER + "' header, with the key holding the key columns in JSON.")
+        .define(CFG_OP_HEADER, ConfigDef.Type.STRING, "op", ConfigDef.Importance.MEDIUM,
+            "Header carrying the operation (r, c, u or d) in the 'flat_json' profile. Matched "
+                + "case-insensitively. Ignored by 'cdc_schema'.")
+        .define(CFG_PK_FIELDS, ConfigDef.Type.LIST, Collections.emptyList(),
+            ConfigDef.Importance.HIGH,
+            "Primary key columns for the MERGE. Leave empty to take them from the record key, "
+                + "which is what both profiles do by default. Required when merging a topic whose "
+                + "records carry no key. Unused when ingestion_only is true.")
 
         .define(CFG_TIMESTAMP_FIELDS_CONVERT, ConfigDef.Type.LIST, Collections.emptyList(),
             ConfigDef.Importance.MEDIUM, "Columns whose epoch-millis value must be converted to LocalDateTime")
@@ -133,9 +151,12 @@ public class SnowflakeSinkConnector extends SinkConnector {
             "Read column names from JDBC metadata (SHOW COLUMNS, no warehouse needed) instead of "
                 + "querying INFORMATION_SCHEMA.")
         .define(CFG_EXCLUDE_INGEST_ADDITIONAL_FIELDS, ConfigDef.Type.LIST,
-            List.of("IH_TOPIC", "IH_PARTITION", "IH_OFFSET", "IH_OP", "IH_DATETIME", "IH_BLOCKID"),
+            List.of("IH_TOPIC", "IH_PARTITION", "IH_OFFSET", "IH_OP", "IH_DATETIME", "IH_BLOCKID",
+                "IH_SCHEMA", "IH_TABLE"),
             ConfigDef.Importance.HIGH,
-            "Ingest-table columns that do not exist in the final table")
+            "Ingest-table columns that do not exist in the final table. IH_SCHEMA and IH_TABLE are "
+                + "only filled by the 'flat_json' profile, from the headers of the same name, and "
+                + "only when the ingest table has those columns.")
         .define(CFG_CONSUMER_OVERRIDE_MAX_POLL_RECORDS, ConfigDef.Type.INT, 500,
             ConfigDef.Importance.MEDIUM,
             "Limits the records KafkaConsumer retrieves from the broker before they reach the connector.")

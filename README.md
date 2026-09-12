@@ -58,6 +58,59 @@ Tables with many repeated updates to the same key will therefore ingest more byt
 which matters because billing is per ingested byte. Measure a real topic before migrating
 everything.
 
+### Record formats
+
+`profile` decides how a record is read. Both formats land in the same ingest table with the same
+`IH_*` metadata, so everything downstream — MERGE, cleanup job, Dynamic Table — is unchanged.
+
+**`cdc_schema` (the default)** — a Debezium envelope carrying a schema, as produced by the Avro
+converter or by the JSON converter with a schema registry. The operation comes from the envelope's
+`op` field, the row from `after` (`before` on a delete), and the primary key from the record's key
+schema.
+
+**`flat_json`** (since 4.0.4) — the row itself as a flat JSON object in the value, and the
+operation in a Kafka header. This is the format described in
+[docs.inthub.io/outputs/snowflake](https://docs.inthub.io/outputs/snowflake):
+
+| Part | Content |
+|---|---|
+| header `op` | `r` or `c` (insert), `u` (update), `d` (delete) |
+| header `schema`, `table` | Source schema and table |
+| value | The whole row as flat JSON. Empty on a delete |
+| key | The key columns as JSON. Required on a delete |
+
+```
+Key:     {"ID":42}
+Value:   {"ID":42,"CLIENTE":"ACME","TOTAL":249.90,"ATUALIZADO_EM":"2026-07-26T11:02:31Z"}
+Headers: op=u  schema=dbo  table=pedidos
+```
+
+```yaml
+profile: "flat_json"
+key.converter: "org.apache.kafka.connect.json.JsonConverter"
+key.converter.schemas.enable: "false"
+value.converter: "org.apache.kafka.connect.json.JsonConverter"
+value.converter.schemas.enable: "false"
+```
+
+- Field names are matched to the ingest columns case-insensitively. A field with no column is
+  dropped; a column with no field lands as NULL.
+- The value may arrive as a `Map` (`JsonConverter` with `schemas.enable=false`, the usual setup), a
+  `Struct`, JSON text (`StringConverter`) or JSON bytes (`ByteArrayConverter`). Nested objects and
+  arrays are written as JSON text rather than as a Java `toString()`.
+- The `op` header is matched case-insensitively and normalized to lower case, because the MERGE
+  compares `ih_op` against lower case literals and Snowflake string comparison is case sensitive.
+  `op_header` renames the header, for producers that send `__op`.
+- **Merge mode needs a primary key.** It comes from the key JSON, so a topic whose records carry no
+  key has to name it with `pk_fields`; the task fails with that message rather than merging on
+  nothing. `ingestion_only` needs no key at all.
+- `schema` and `table` say where the row came from. This connector still writes to the one table
+  `table` names — one connector, one table — so they are only recorded, into the `IH_SCHEMA` and
+  `IH_TABLE` ingest columns when those exist.
+- A temporal column sent as an ISO string passes straight through for Snowflake to parse.
+  `timestamp_fields_convert` and friends still convert when the value is a number, so the same
+  connector definition works for both shapes.
+
 ### Configuration
 
 | Key | Type | Default | Description |
@@ -70,6 +123,9 @@ everything.
 | `role` | string | user's default | Streaming session only, never sent over JDBC |
 | `streaming_url` | string | `https://<host of url>:443` | Only when the streaming endpoint differs from the JDBC one |
 | `ingestion_only` | boolean | `false` | Stream into `_INGEST` only: no MERGE, no cleanup job |
+| `profile` | string | `cdc_schema` | Record format: `cdc_schema` or `flat_json` |
+| `op_header` | string | `op` | Header carrying the operation; `flat_json` only |
+| `pk_fields` | list | empty | Primary key columns. Empty means the record key names them |
 | `pipe` | string | `<table>_INGEST-STREAMING` | Override to use a custom pipe |
 | `channel_name_prefix` | string | connector name | Must be stable across restarts |
 | `max_client_lag_seconds` | int | SDK default | Higher buffers longer, writing fewer and larger files |
@@ -90,7 +146,7 @@ The v3 keys `stage`, `tmp_data_folder`, `buffer_initial_capacity` and `copy_only
 v4, nor do the ones that were already dead code in v3 (`pk`, `always_truncate_before_bulk`,
 `truncate_when_nodata_after_seconds`, `redis_*`).
 
-Nothing was added either. The connection keeps v3's shape exactly: only `user` and `password` are
+Nothing was added to the connection either — it keeps v3's shape exactly: only `user` and `password` are
 handed to the driver, and the account, database, schema and role come from the URL and the user's
 defaults. The streaming SDK cannot work that way — it takes the account, endpoint, database and
 schema as explicit arguments — so the connector derives them from that same JDBC URL:
@@ -108,8 +164,11 @@ The temporal conversions keep v3's behaviour of using the JVM's default timezone
 migration does not shift existing values. Set `TZ` explicitly on the Connect pods if that matters
 to you.
 
-A ready-to-edit connector definition is in
-[`infra/k8s/connectors/sink-snowflake-v4_sample.yaml`](infra/k8s/connectors/sink-snowflake-v4_sample.yaml).
+Ready-to-edit connector definitions are in
+[`infra/k8s/connectors/sink-snowflake-v4_sample.yaml`](infra/k8s/connectors/sink-snowflake-v4_sample.yaml)
+for the Debezium format and
+[`infra/k8s/connectors/sink-snowflake-v4-flatjson_sample.yaml`](infra/k8s/connectors/sink-snowflake-v4-flatjson_sample.yaml)
+for the flat JSON one.
 
 ### Deploying on Strimzi: raise the /tmp size limit
 

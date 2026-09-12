@@ -21,6 +21,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Duration;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -313,6 +314,67 @@ class SnowflakeSinkTaskTest {
 
         verify(channels).reopen(TP);
         verify(context).offset(Map.of(TP, 89L));
+    }
+
+    /** A flat JSON record: the row in the value, the operation in a header. */
+    private SinkRecord flatRecord(String op, String id, boolean withKey, long offset) {
+        var value = new LinkedHashMap<String, Object>();
+        value.put("ID", id);
+        value.put("NAME", "Name " + id);
+
+        var record = new SinkRecord(TP.topic(), TP.partition(), null,
+                withKey ? Map.of("ID", id) : null, null,
+                "d".equals(op) ? null : value, offset);
+        record.headers().addString("op", op);
+        return record;
+    }
+
+    @Test
+    void flatJsonProfileStreamsAndMergesOnTheKeyFromTheRecord() throws SQLException {
+        var task = task(Map.of("profile", "flat_json", "ingestion_only", "false"));
+
+        task.put(List.of(flatRecord("c", "1", true, 0L), flatRecord("d", "2", true, 1L)));
+        snowflakeHasUpTo(1L);
+        var offsets = task.preCommit(Map.of(TP, new OffsetAndMetadata(2L)));
+
+        verify(channels, times(2)).appendRow(eq(TP), anyMap(), anyLong());
+        // the key JSON names the primary key, exactly as the Debezium key schema does
+        verify(statement).executeLargeUpdate(matches("(?s)MERGE INTO EVENTS.*final.ID = ingest.ID.*"));
+        verify(statement).executeLargeUpdate(matches("(?s)DELETE FROM EVENTS.*"));
+        assertEquals(2L, offsets.get(TP).offset());
+    }
+
+    @Test
+    void flatJsonWithoutKeysSaysWhichSettingIsMissing() {
+        var task = task(Map.of("profile", "flat_json", "ingestion_only", "false"));
+
+        task.put(List.of(flatRecord("c", "1", false, 0L)));
+        snowflakeHasUpTo(0L);
+
+        var e = assertThrows(ConnectException.class,
+                () -> task.preCommit(Map.of(TP, new OffsetAndMetadata(1L))));
+        assertTrue(e.getMessage().contains("pk_fields"), e.getMessage());
+    }
+
+    @Test
+    void flatJsonWithoutKeysMergesOnTheConfiguredPkFields() throws SQLException {
+        var task = task(Map.of("profile", "flat_json", "ingestion_only", "false",
+                "pk_fields", "ID"));
+
+        task.put(List.of(flatRecord("c", "1", false, 0L)));
+        snowflakeHasUpTo(0L);
+        task.preCommit(Map.of(TP, new OffsetAndMetadata(1L)));
+
+        verify(statement).executeLargeUpdate(matches("(?s)MERGE INTO EVENTS.*final.ID = ingest.ID.*"));
+    }
+
+    @Test
+    void flatJsonInIngestionOnlyNeedsNoKeyAtAll() {
+        var task = task(Map.of("profile", "flat_json", "ingestion_only", "true"));
+
+        task.put(List.of(flatRecord("c", "1", false, 0L), flatRecord("u", "2", false, 1L)));
+
+        verify(channels, times(2)).appendRow(eq(TP), anyMap(), anyLong());
     }
 
     @Test

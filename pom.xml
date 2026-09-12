@@ -6,7 +6,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>br.com.datastreambrasil</groupId>
     <artifactId>snowflake-sink-connector</artifactId>
-    <version>4.0.3</version>
+    <version>4.0.4</version>
 
     <properties>
         <maven.compiler.source>17</maven.compiler.source>
@@ -31,6 +31,18 @@
             <groupId>org.apache.kafka</groupId>
             <artifactId>connect-api</artifactId>
             <version>4.1.2</version>
+        </dependency>
+
+        <!--
+          The flat_json profile reads the row out of the record value. JsonConverter hands it over
+          already deserialized as a Map, but StringConverter and ByteArrayConverter hand over text,
+          and nothing on the classpath parses JSON: snowflake-jdbc relocates its own copy of
+          Jackson into an internal package.
+        -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>2.19.4</version>
         </dependency>
 
         <!-- logs -->

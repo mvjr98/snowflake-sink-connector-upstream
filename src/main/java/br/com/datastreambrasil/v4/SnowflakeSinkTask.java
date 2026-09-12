@@ -85,8 +85,11 @@ public class SnowflakeSinkTask extends SinkTask {
         var config = new AbstractConfig(SnowflakeSinkConnector.CONFIG_DEF, map);
 
         var profile = config.getString(SnowflakeSinkConnector.CFG_PROFILE);
-        if (!SnowflakeSinkConnector.PROFILE_CDC_SCHEMA.equals(profile)) {
-            throw new ConnectException("Unknown profile: " + profile);
+        if (!SnowflakeSinkConnector.PROFILE_CDC_SCHEMA.equals(profile)
+                && !SnowflakeSinkConnector.PROFILE_FLAT_JSON.equals(profile)) {
+            throw new ConnectException("Unknown profile: " + profile + ". Valid values are "
+                    + SnowflakeSinkConnector.PROFILE_CDC_SCHEMA + " and "
+                    + SnowflakeSinkConnector.PROFILE_FLAT_JSON);
         }
 
         ingestionOnly = config.getBoolean(SnowflakeSinkConnector.CFG_INGESTION_ONLY);
@@ -108,10 +111,7 @@ public class SnowflakeSinkTask extends SinkTask {
                 .filter(c -> !ingestOnlyColumns.contains(c.toUpperCase(Locale.ROOT)))
                 .toList();
 
-        rowMapper = new RowMapper(columnsIngestTable,
-                config.getList(SnowflakeSinkConnector.CFG_TIMESTAMP_FIELDS_CONVERT),
-                config.getList(SnowflakeSinkConnector.CFG_DATE_FIELDS_CONVERT),
-                config.getList(SnowflakeSinkConnector.CFG_TIME_FIELDS_CONVERT));
+        rowMapper = createRowMapper(profile, config, columnsIngestTable);
 
         channels = createChannelManager(config, map);
 
@@ -126,6 +126,23 @@ public class SnowflakeSinkTask extends SinkTask {
                     columnsFinalTable, ingestOnlyColumns);
             startCleanUpJob(config);
         }
+    }
+
+    /** The profile decides where the operation, the primary key and the row come from. */
+    private RowMapper createRowMapper(String profile, AbstractConfig config, List<String> ingestColumns) {
+        var pkFields = config.getList(SnowflakeSinkConnector.CFG_PK_FIELDS);
+        var timestampFields = config.getList(SnowflakeSinkConnector.CFG_TIMESTAMP_FIELDS_CONVERT);
+        var dateFields = config.getList(SnowflakeSinkConnector.CFG_DATE_FIELDS_CONVERT);
+        var timeFields = config.getList(SnowflakeSinkConnector.CFG_TIME_FIELDS_CONVERT);
+
+        if (SnowflakeSinkConnector.PROFILE_FLAT_JSON.equals(profile)) {
+            var opHeader = config.getString(SnowflakeSinkConnector.CFG_OP_HEADER);
+            LOGGER.info("Profile {}: the row comes from a flat JSON value and the operation from "
+                    + "the '{}' header", profile, opHeader);
+            return new FlatJsonRowMapper(ingestColumns, pkFields, timestampFields, dateFields,
+                    timeFields, opHeader);
+        }
+        return new CdcSchemaRowMapper(ingestColumns, pkFields, timestampFields, dateFields, timeFields);
     }
 
     /**
@@ -267,10 +284,13 @@ public class SnowflakeSinkTask extends SinkTask {
             }
 
             // resolve the primary key before the skip below: after a restart every redelivered
-            // record can already be in the ingest table, and the MERGE still needs the key
-            if (pks.isEmpty()) {
+            // record can already be in the ingest table, and the MERGE still needs the key.
+            // ingestion_only never merges, so a keyless record is fine there.
+            if (!ingestionOnly && pks.isEmpty()) {
                 pks = rowMapper.extractPk(record);
-                LOGGER.info("Primary key columns resolved from record key schema: {}", pks);
+                if (!pks.isEmpty()) {
+                    LOGGER.info("Primary key columns resolved to: {}", pks);
+                }
             }
 
             var alreadyCommitted = committedAtOpen.get(tp);
@@ -303,7 +323,7 @@ public class SnowflakeSinkTask extends SinkTask {
     }
 
     private void markOperation(SinkRecord record) {
-        if (RowMapper.DebeziumOperation.d.name().equalsIgnoreCase(rowMapper.operationOf(record))) {
+        if (RowMapper.Operation.d.name().equalsIgnoreCase(rowMapper.operationOf(record))) {
             blockHasDeletes = true;
         } else {
             blockHasUpserts = true;
@@ -384,6 +404,14 @@ public class SnowflakeSinkTask extends SinkTask {
             LOGGER.debug("Holding {} partition(s) until the merge interval of {} elapses",
                     ranges.size(), mergeInterval);
             return;
+        }
+
+        if (pks.isEmpty()) {
+            // only reachable when the records carry no key at all - the flat JSON profile takes
+            // the primary key from the key JSON, and a delete has nothing else to name a row with
+            throw new ConnectException("No primary key columns: the records carry no key, so set '"
+                    + SnowflakeSinkConnector.CFG_PK_FIELDS
+                    + "' to the column(s) that identify a row, or run with ingestion_only=true.");
         }
 
         if (blockHasUpserts) {

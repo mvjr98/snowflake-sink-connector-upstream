@@ -64,6 +64,21 @@ class SnowflakeSinkConnectorTest {
     }
 
     @Test
+    void theFlatJsonProfileIsDeclaredWithoutChangingTheDefault() {
+        var keys = SnowflakeSinkConnector.CONFIG_DEF.names();
+
+        assertTrue(keys.contains("profile"));
+        assertTrue(keys.contains("op_header"));
+        assertTrue(keys.contains("pk_fields"));
+
+        // an existing Debezium connector definition must keep working untouched
+        assertEquals("cdc_schema",
+                SnowflakeSinkConnector.CONFIG_DEF.configKeys().get("profile").defaultValue);
+        assertEquals("op",
+                SnowflakeSinkConnector.CONFIG_DEF.configKeys().get("op_header").defaultValue);
+    }
+
+    @Test
     void streamingSettingsAreDeclared() {
         var keys = SnowflakeSinkConnector.CONFIG_DEF.names();
 

@@ -1,11 +1,6 @@
 package br.com.datastreambrasil.v4;
 
-import br.com.datastreambrasil.v4.exception.InvalidStructException;
-import org.apache.kafka.connect.data.Field;
-import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.sink.SinkRecord;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
 
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
@@ -24,49 +19,57 @@ import java.util.Map;
 import java.util.TimeZone;
 
 /**
- * Turns a Debezium CDC {@link SinkRecord} into the row map Snowpipe Streaming expects.
+ * Turns a CDC {@link SinkRecord} into the row map Snowpipe Streaming expects.
  *
  * <p>Unlike v3 - which built a positional CSV line ordered by the ingest table's ordinal
  * positions - the pipe matches by column name, so this produces a
  * {@code Map<columnName, value>}. Keys are the column names exactly as they come back from
  * Snowflake's metadata (upper case for unquoted identifiers), which keeps the mapping correct
  * whether or not the pipe is case sensitive.
+ *
+ * <p>Where the operation, the primary key and the payload come from is the profile's business:
+ * {@link CdcSchemaRowMapper} reads them out of a Debezium envelope, {@link FlatJsonRowMapper}
+ * out of a flat JSON value plus Kafka headers. Everything after that - which columns are
+ * emitted, how values are converted, what metadata is stamped - is the same for both.
  */
-public class RowMapper {
+public abstract class RowMapper {
 
-    private static final Logger LOGGER = LogManager.getLogger(RowMapper.class);
+    protected static final String IHTOPIC = "IH_TOPIC";
+    protected static final String IHOFFSET = "IH_OFFSET";
+    protected static final String IHPARTITION = "IH_PARTITION";
+    protected static final String IHOP = "IH_OP";
+    protected static final String IHDATETIME = "IH_DATETIME";
+    protected static final String IHBLOCKID = "IH_BLOCKID";
+    protected static final String IHSCHEMA = "IH_SCHEMA";
+    protected static final String IHTABLE = "IH_TABLE";
 
-    protected static final String AFTER = "after";
-    protected static final String BEFORE = "before";
-    protected static final String OP = "op";
-    protected static final String IHTOPIC = "ih_topic";
-    protected static final String IHOFFSET = "ih_offset";
-    protected static final String IHPARTITION = "ih_partition";
-    protected static final String IHOP = "ih_op";
-    protected static final String IHDATETIME = "ih_datetime";
-    protected static final String IHBLOCKID = "ih_blockid";
-
-    /** Debezium operation codes: delete, create, update, read (snapshot). */
-    public enum DebeziumOperation {
+    /**
+     * CDC operation codes. Debezium and the flat JSON profile use the same four: delete, create,
+     * update, read (snapshot).
+     */
+    public enum Operation {
         d, c, u, r
     }
 
     private final List<String> ingestColumns;
+    private final List<String> pkFields;
     private final List<String> timestampFieldsConvert;
     private final List<String> dateFieldsConvert;
     private final List<String> timeFieldsConvert;
 
-    public RowMapper(List<String> ingestColumns,
-                     List<String> timestampFieldsConvert,
-                     List<String> dateFieldsConvert,
-                     List<String> timeFieldsConvert) {
+    protected RowMapper(List<String> ingestColumns,
+                        List<String> pkFields,
+                        List<String> timestampFieldsConvert,
+                        List<String> dateFieldsConvert,
+                        List<String> timeFieldsConvert) {
         this.ingestColumns = List.copyOf(ingestColumns);
+        this.pkFields = normalize(pkFields);
         this.timestampFieldsConvert = normalize(timestampFieldsConvert);
         this.dateFieldsConvert = normalize(dateFieldsConvert);
         this.timeFieldsConvert = normalize(timeFieldsConvert);
     }
 
-    private static List<String> normalize(List<String> values) {
+    protected static List<String> normalize(List<String> values) {
         var out = new ArrayList<String>();
         if (values != null) {
             for (String v : values) {
@@ -78,47 +81,31 @@ public class RowMapper {
         return List.copyOf(out);
     }
 
-    /** Debezium operation carried by the record. Throws when the envelope is malformed. */
-    public String operationOf(SinkRecord record) {
-        var fieldOP = record.valueSchema().field(OP);
-        if (fieldOP == null) {
-            LOGGER.error("Field '{}' not found in value schema for record: {}", OP, record);
-            throw new InvalidStructException("Field '" + OP + "' not found in value schema");
-        }
+    /** The operation the record carries, as one of {@link Operation}. */
+    public abstract String operationOf(SinkRecord record);
 
-        var valueOP = ((Struct) record.value()).getString(fieldOP.name());
-        if (valueOP == null) {
-            LOGGER.error("Value for field '{}' is null in record: {}", OP, record);
-            throw new InvalidStructException("Value for field '" + OP + "' is null");
-        }
-        return valueOP;
-    }
+    /** Rejects a record the profile cannot map, before anything is read out of it. */
+    public abstract void validate(SinkRecord record);
 
-    /** Primary key column names, taken from the record's key schema like v3 did. */
-    public List<String> extractPk(SinkRecord record) {
-        var pks = new ArrayList<String>();
-        for (Field field : record.keySchema().fields()) {
-            pks.add(field.name());
-        }
-        if (pks.isEmpty()) {
-            throw new InvalidStructException("Record key schema has no fields, cannot derive primary key");
-        }
-        return List.copyOf(pks);
-    }
+    /**
+     * The record's payload as a map keyed by upper case field name. Which part of the record
+     * that is - a Debezium {@code before}/{@code after} struct, a flat JSON value, the key of a
+     * delete - is the profile's business.
+     */
+    protected abstract Map<String, Object> payloadFields(SinkRecord record, String op);
 
-    public void validate(SinkRecord record) {
-        if (record.keySchema() == null || record.valueSchema() == null
-                || !(record.key() instanceof Struct) || !(record.value() instanceof Struct)) {
-            LOGGER.error("Key and value must be Structs with schemas. Key: {}, Value: {}",
-                    record.key(), record.value());
-            throw new InvalidStructException("Invalid record structure or schema");
-        }
+    /**
+     * Primary key columns taken from the record itself. May come back empty when the record
+     * cannot name them, which is why {@code pk_fields} exists.
+     */
+    protected abstract List<String> pkFromRecord(SinkRecord record);
 
-        if (record.topic() == null || record.kafkaPartition() == null) {
-            LOGGER.error("Null values for topic or kafkaPartition. Topic {}, KafkaPartition {}",
-                    record.topic(), record.kafkaPartition());
-            throw new InvalidStructException("Invalid record structure or schema");
-        }
+    /**
+     * Primary key columns for the MERGE. The configured {@code pk_fields} wins when set, so a
+     * topic whose records carry no key can still be merged.
+     */
+    public final List<String> extractPk(SinkRecord record) {
+        return pkFields.isEmpty() ? pkFromRecord(record) : pkFields;
     }
 
     /**
@@ -128,68 +115,65 @@ public class RowMapper {
     public Map<String, Object> toRow(SinkRecord record, String blockId) {
         validate(record);
 
-        var valueRecord = (Struct) record.value();
         var op = operationOf(record);
-        var payload = DebeziumOperation.d.name().equalsIgnoreCase(op)
-                ? valueRecord.getStruct(BEFORE)
-                : valueRecord.getStruct(AFTER);
-
-        if (payload == null) {
-            LOGGER.error("Record has no '{}' payload for operation '{}': {}",
-                    DebeziumOperation.d.name().equalsIgnoreCase(op) ? BEFORE : AFTER, op, record);
-            throw new InvalidStructException("Missing payload struct for operation '" + op + "'");
-        }
-
-        // case-insensitive lookup of the Debezium fields, mirroring v3's equalsIgnoreCase match
-        var fieldsByName = new HashMap<String, Object>();
-        for (Field field : payload.schema().fields()) {
-            fieldsByName.put(field.name().toUpperCase(Locale.ROOT), payload.get(field.name()));
-        }
+        var fields = payloadFields(record, op);
+        var metadata = metadata(record, op, blockId);
 
         var row = new LinkedHashMap<String, Object>(ingestColumns.size());
         for (String column : ingestColumns) {
-            if (column.equalsIgnoreCase(IHBLOCKID)) {
-                row.put(column, blockId);
-            } else if (column.equalsIgnoreCase(IHOP)) {
-                row.put(column, op);
-            } else if (column.equalsIgnoreCase(IHTOPIC)) {
-                row.put(column, record.topic());
-            } else if (column.equalsIgnoreCase(IHDATETIME)) {
-                row.put(column, LocalDateTime.now(ZoneOffset.UTC).toString());
-            } else if (column.equalsIgnoreCase(IHPARTITION)) {
-                row.put(column, record.kafkaPartition());
-            } else if (column.equalsIgnoreCase(IHOFFSET)) {
-                row.put(column, record.kafkaOffset());
-            } else {
-                var value = fieldsByName.get(column.toUpperCase(Locale.ROOT));
-                if (value == null) {
-                    // absent or null: leaving the key out makes the pipe write NULL
-                    continue;
-                }
-                row.put(column, convert(column, value));
+            var upper = column.toUpperCase(Locale.ROOT);
+            if (metadata.containsKey(upper)) {
+                row.put(column, metadata.get(upper));
+                continue;
             }
+            var value = fields.get(upper);
+            if (value == null) {
+                // absent or null: leaving the key out makes the pipe write NULL
+                continue;
+            }
+            row.put(column, convert(column, value));
         }
 
         return row;
     }
 
-    private Object convert(String column, Object value) {
+    /**
+     * The {@code IH_*} columns, keyed upper case. A profile with more to say about the record
+     * adds to this - the flat JSON one stamps the source schema and table when the headers
+     * carry them.
+     */
+    protected Map<String, Object> metadata(SinkRecord record, String op, String blockId) {
+        var metadata = new HashMap<String, Object>(8);
+        metadata.put(IHBLOCKID, blockId);
+        metadata.put(IHOP, op);
+        metadata.put(IHTOPIC, record.topic());
+        metadata.put(IHDATETIME, LocalDateTime.now(ZoneOffset.UTC).toString());
+        metadata.put(IHPARTITION, record.kafkaPartition());
+        metadata.put(IHOFFSET, record.kafkaOffset());
+        return metadata;
+    }
+
+    protected Object convert(String column, Object value) {
         var upper = column.toUpperCase(Locale.ROOT);
 
         // same semantics as v3: the source sends epoch millis / epoch days / nanos-of-day and the
         // configured column lists say how to read them. Kept on the default JVM timezone so a
-        // v3 -> v4 migration does not shift existing values.
-        if (timestampFieldsConvert.contains(upper)) {
-            return LocalDateTime.ofInstant(Instant.ofEpochMilli(((Number) value).longValue()),
-                    TimeZone.getDefault().toZoneId()).toString();
-        }
-        if (dateFieldsConvert.contains(upper)) {
-            var daysInSeconds = ((Number) value).longValue() * 24L * 60L * 60L;
-            return LocalDate.ofInstant(Instant.ofEpochSecond(daysInSeconds),
-                    TimeZone.getDefault().toZoneId()).toString();
-        }
-        if (timeFieldsConvert.contains(upper)) {
-            return LocalTime.ofNanoOfDay(((Number) value).longValue()).toString();
+        // v3 -> v4 migration does not shift existing values. A value that is not a number - a flat
+        // JSON payload may well carry the column as an ISO string - passes through untouched
+        // instead of failing the task.
+        if (value instanceof Number number) {
+            if (timestampFieldsConvert.contains(upper)) {
+                return LocalDateTime.ofInstant(Instant.ofEpochMilli(number.longValue()),
+                        TimeZone.getDefault().toZoneId()).toString();
+            }
+            if (dateFieldsConvert.contains(upper)) {
+                var daysInSeconds = number.longValue() * 24L * 60L * 60L;
+                return LocalDate.ofInstant(Instant.ofEpochSecond(daysInSeconds),
+                        TimeZone.getDefault().toZoneId()).toString();
+            }
+            if (timeFieldsConvert.contains(upper)) {
+                return LocalTime.ofNanoOfDay(number.longValue()).toString();
+            }
         }
 
         if (value instanceof ByteBuffer buffer) {

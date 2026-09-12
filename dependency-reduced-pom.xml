@@ -3,7 +3,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>br.com.datastreambrasil</groupId>
   <artifactId>snowflake-sink-connector</artifactId>
-  <version>4.0.3</version>
+  <version>4.0.4</version>
   <build>
     <plugins>
       <plugin>
@@ -106,8 +106,8 @@
     </dependencies>
   </dependencyManagement>
   <properties>
-    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.compiler.target>17</maven.compiler.target>
     <maven.compiler.source>17</maven.compiler.source>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
   </properties>
 </project>
