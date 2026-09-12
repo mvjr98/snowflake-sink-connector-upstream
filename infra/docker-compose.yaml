@@ -43,6 +43,24 @@ services:
     ports:
       - 8085:8085
 
+  # Connect worker for local testing. Runs Kafka 4.1 - the version the connector compiles
+  # against - and picks the connector up from target/, so the jar under test is the jar that
+  # runs. Build it first: mvn -DskipTests package.
+  connect:
+    # Kafka 4.1 on a glibc base - see the Dockerfile. The stock apache/kafka image is Alpine and
+    # the SDK's Rust core will not load there.
+    build:
+      context: ./connect
+    depends_on:
+      - broker
+    ports:
+      - 8083:8083
+    volumes:
+      - ./connect/connect-distributed.properties:/opt/kafka/config/connect-distributed-local.properties:ro
+      # the shaded jar only - target/ also holds the thin original-*.jar, and Connect would
+      # load both as separate plugins. Keep the version in step with the pom.
+      - ../target/snowflake-sink-connector-4.0.4.jar:/opt/kafka/plugins/snowflake-sink-connector.jar:ro
+
   akhq:
     image: tchiotludo/akhq:0.25.0
     environment:
@@ -54,6 +72,9 @@ services:
                 bootstrap.servers: "broker:29092"
               schema-registry:
                 url: "http://schemaregistry:8085"
+              connect:
+                - name: connect
+                  url: "http://connect:8083"
     depends_on:
       - broker
     ports:

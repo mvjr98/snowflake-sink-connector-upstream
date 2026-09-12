@@ -48,6 +48,17 @@ jobs:
             echo "signature files leaked into the uber-jar" >&2
             exit 1
           fi
+
+          # Jackson must only exist relocated. An unrelocated copy wins over the worker's
+          # (plugin classloaders are child first) and then the worker's own
+          # jackson-dataformat-yaml - Kafka 4.x configures log4j2 from YAML - meets a
+          # JsonFactory from the other classloader: the task dies at class init with
+          # "VerifyError: Bad type on operand stack".
+          if unzip -l "$JAR" | grep -q ' com/fasterxml/jackson/'; then
+            echo "unrelocated jackson leaked into the uber-jar" >&2
+            exit 1
+          fi
+          unzip -l "$JAR" | grep -q 'br/com/datastreambrasil/shaded/jackson/databind/ObjectMapper.class'
           echo "jar looks good"
 
       - name: Upload build artifact

@@ -140,6 +140,21 @@
                             <goal>shade</goal>
                         </goals>
                         <configuration>
+                            <relocations>
+                                <!--
+                                  Jackson has to be invisible outside this jar. The Connect worker
+                                  brings its own - Kafka 4.x even configures log4j2 from a YAML
+                                  file, which loads jackson-dataformat-yaml from the worker - and
+                                  a plugin classloader is child first. An unrelocated copy here
+                                  means YAMLFactory (worker) meets JsonFactory (plugin) and the
+                                  task dies at class init with "VerifyError: Bad type on operand
+                                  stack", before the connector runs a single line.
+                                -->
+                                <relocation>
+                                    <pattern>com.fasterxml.jackson</pattern>
+                                    <shadedPattern>br.com.datastreambrasil.shaded.jackson</shadedPattern>
+                                </relocation>
+                            </relocations>
                             <filters>
                                 <filter>
                                     <artifact>*:*</artifact>
