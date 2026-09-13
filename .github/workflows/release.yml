@@ -67,9 +67,31 @@ jobs:
           name: snowflake-sink-connector
           path: target/snowflake-sink-connector-*.jar
 
+      # The release notes are written by hand, per version, in .github/release-notes/<tag>.md:
+      # first line is the release title, the rest is the body. Without this the release would
+      # carry only GitHub's generated commit list, which says nothing about what the version
+      # does. Falls back to the annotated tag message when there is no file.
+      - name: Prepare the release notes
+        id: notes
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          NOTES=".github/release-notes/${GITHUB_REF_NAME}.md"
+          if [ ! -f "$NOTES" ]; then
+            echo "no notes file for ${GITHUB_REF_NAME}, using the tag message" >&2
+            git tag -l --format='%(contents)' "${GITHUB_REF_NAME}" > /tmp/notes.md
+            NOTES=/tmp/notes.md
+          fi
+          echo "title=$(head -1 "$NOTES" | sed 's/^#\+ *//')" >> "$GITHUB_OUTPUT"
+          tail -n +2 "$NOTES" > /tmp/body.md
+          echo "--- release body ---"
+          cat /tmp/body.md
+
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          name: ${{ steps.notes.outputs.title }}
+          body_path: /tmp/body.md
           files: target/snowflake-sink-connector-*.jar
           generate_release_notes: true
