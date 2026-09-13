@@ -77,7 +77,7 @@ public class MergeExecutor {
     protected String buildMergeSql(Map<Integer, OffsetRange> ranges, List<String> pks) {
         return String.format(
                 "MERGE INTO %s AS final USING ("
-                        + "SELECT * EXCLUDE (%s) FROM (%s) WHERE ih_op in ('c', 'r', 'u')"
+                        + "SELECT %s FROM (%s) WHERE ih_op in ('c', 'r', 'u')"
                         + ") AS ingest ON %s "
                         + "WHEN NOT MATCHED THEN INSERT (%s) VALUES (%s) "
                         + "WHEN MATCHED THEN UPDATE SET %s",
@@ -131,8 +131,14 @@ public class MergeExecutor {
                 .toList());
     }
 
+    /**
+     * {@code *}, minus the ingest-only columns. Snowflake rejects an empty {@code EXCLUDE ()}, so
+     * an ingest table whose columns all exist in the final table selects a plain {@code *}.
+     */
     protected String buildExcludeColumns() {
-        return String.join(",", ingestOnlyColumns);
+        return ingestOnlyColumns.isEmpty()
+                ? "*"
+                : String.format("* EXCLUDE (%s)", String.join(",", ingestOnlyColumns));
     }
 
     protected String buildPkWhereClause(List<String> pks) {

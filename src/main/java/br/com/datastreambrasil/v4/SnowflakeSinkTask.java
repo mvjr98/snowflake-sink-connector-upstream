@@ -85,9 +85,11 @@ public class SnowflakeSinkTask extends SinkTask {
         var config = new AbstractConfig(SnowflakeSinkConnector.CONFIG_DEF, map);
 
         var profile = config.getString(SnowflakeSinkConnector.CFG_PROFILE);
-        if (!SnowflakeSinkConnector.PROFILE_CDC_SCHEMA.equals(profile)
+        if (!SnowflakeSinkConnector.PROFILE_AUTO.equals(profile)
+                && !SnowflakeSinkConnector.PROFILE_CDC_SCHEMA.equals(profile)
                 && !SnowflakeSinkConnector.PROFILE_FLAT_JSON.equals(profile)) {
             throw new ConnectException("Unknown profile: " + profile + ". Valid values are "
+                    + SnowflakeSinkConnector.PROFILE_AUTO + ", "
                     + SnowflakeSinkConnector.PROFILE_CDC_SCHEMA + " and "
                     + SnowflakeSinkConnector.PROFILE_FLAT_JSON);
         }
@@ -105,8 +107,7 @@ public class SnowflakeSinkTask extends SinkTask {
                 config.getBoolean(SnowflakeSinkConnector.CFG_FIND_COLUMNS_IN_METADATA),
                 config.getList(SnowflakeSinkConnector.CFG_IGNORE_COLUMNS));
 
-        var ingestOnlyColumns = config.getList(SnowflakeSinkConnector.CFG_EXCLUDE_INGEST_ADDITIONAL_FIELDS)
-                .stream().map(c -> c.toUpperCase(Locale.ROOT)).toList();
+        var ingestOnlyColumns = excludedColumnsPresentIn(columnsIngestTable, config);
         var columnsFinalTable = columnsIngestTable.stream()
                 .filter(c -> !ingestOnlyColumns.contains(c.toUpperCase(Locale.ROOT)))
                 .toList();
@@ -128,6 +129,31 @@ public class SnowflakeSinkTask extends SinkTask {
         }
     }
 
+    /**
+     * The configured ingest-only columns, minus the ones the ingest table does not actually have.
+     *
+     * <p>The MERGE names them in a {@code SELECT * EXCLUDE (...)}, and Snowflake refuses the whole
+     * statement when one of them does not exist - "column 'IH_BLOCKID' does not exist" - so a
+     * table without, say, {@code IH_BLOCKID} could never be merged into. Excluding a column that
+     * is not there means nothing anyway: the list only says which ingest columns are missing from
+     * the final table.
+     */
+    private List<String> excludedColumnsPresentIn(List<String> ingestColumns, AbstractConfig config) {
+        var configured = config.getList(SnowflakeSinkConnector.CFG_EXCLUDE_INGEST_ADDITIONAL_FIELDS)
+                .stream().map(c -> c.toUpperCase(Locale.ROOT)).toList();
+
+        var present = configured.stream()
+                .filter(c -> ingestColumns.stream().anyMatch(column -> column.equalsIgnoreCase(c)))
+                .toList();
+
+        var absent = configured.stream().filter(c -> !present.contains(c)).toList();
+        if (!absent.isEmpty()) {
+            LOGGER.info("Ignoring {} from '{}': not a column of {}", absent,
+                    SnowflakeSinkConnector.CFG_EXCLUDE_INGEST_ADDITIONAL_FIELDS, ingestTableName);
+        }
+        return present;
+    }
+
     /** The profile decides where the operation, the primary key and the row come from. */
     private RowMapper createRowMapper(String profile, AbstractConfig config, List<String> ingestColumns) {
         var pkFields = config.getList(SnowflakeSinkConnector.CFG_PK_FIELDS);
@@ -135,14 +161,19 @@ public class SnowflakeSinkTask extends SinkTask {
         var dateFields = config.getList(SnowflakeSinkConnector.CFG_DATE_FIELDS_CONVERT);
         var timeFields = config.getList(SnowflakeSinkConnector.CFG_TIME_FIELDS_CONVERT);
 
+        var opHeader = config.getString(SnowflakeSinkConnector.CFG_OP_HEADER);
+        LOGGER.info("Record format: {}", profile);
+
         if (SnowflakeSinkConnector.PROFILE_FLAT_JSON.equals(profile)) {
-            var opHeader = config.getString(SnowflakeSinkConnector.CFG_OP_HEADER);
-            LOGGER.info("Profile {}: the row comes from a flat JSON value and the operation from "
-                    + "the '{}' header", profile, opHeader);
             return new FlatJsonRowMapper(ingestColumns, pkFields, timestampFields, dateFields,
                     timeFields, opHeader);
         }
-        return new CdcSchemaRowMapper(ingestColumns, pkFields, timestampFields, dateFields, timeFields);
+        if (SnowflakeSinkConnector.PROFILE_CDC_SCHEMA.equals(profile)) {
+            return new CdcSchemaRowMapper(ingestColumns, pkFields, timestampFields, dateFields,
+                    timeFields);
+        }
+        return new AutoRowMapper(ingestColumns, pkFields, timestampFields, dateFields, timeFields,
+                opHeader);
     }
 
     /**

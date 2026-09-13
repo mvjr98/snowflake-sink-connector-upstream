@@ -22,7 +22,10 @@ spec:
     #
     # op is r/c (insert), u (update) or d (delete) - the same four codes Debezium uses, so
     # nothing downstream changes. A delete has no value: the key names the row.
-    profile: "flat_json"
+    #
+    # No 'profile' here on purpose: the connector detects the format per record, so the same
+    # definition also ingests a Debezium envelope. Set profile: "flat_json" only to reject
+    # anything that is not a flat row.
 
     # Rename the header if the producer sends something else, e.g. __op
     # op_header: "op"

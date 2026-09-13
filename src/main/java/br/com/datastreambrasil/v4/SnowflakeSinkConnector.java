@@ -23,9 +23,10 @@ import java.util.Map;
  *       into the final table, like v3 did.</li>
  * </ul>
  *
- * <p>Two record formats, picked with {@code profile}: {@code cdc_schema} for a Debezium envelope
- * carrying a schema, and {@code flat_json} for a flat JSON row with the operation in a header.
- * Both produce the same ingest rows, so everything downstream is unchanged.
+ * <p>Two record formats: a Debezium envelope carrying a schema, and a flat JSON row with the
+ * operation in a header. Which one a record is gets detected per record, so neither needs
+ * configuring; {@code profile} pins it to one when that is preferable. Both produce the same
+ * ingest rows, so everything downstream is unchanged.
  */
 public class SnowflakeSinkConnector extends SinkConnector {
 
@@ -68,6 +69,7 @@ public class SnowflakeSinkConnector extends SinkConnector {
     protected static final String CFG_CONSUMER_OVERRIDE_MAX_POLL_RECORDS = "consumer.override.max.poll.records";
     protected static final String CFG_CONSUMER_OVERRIDE_MAX_POLL_INTERVAL_MS = "consumer.override.max.poll.interval.ms";
 
+    protected static final String PROFILE_AUTO = "auto";
     protected static final String PROFILE_CDC_SCHEMA = "cdc_schema";
     protected static final String PROFILE_FLAT_JSON = "flat_json";
 
@@ -118,11 +120,12 @@ public class SnowflakeSinkConnector extends SinkConnector {
         .define(CFG_INGESTION_ONLY, ConfigDef.Type.BOOLEAN, false, ConfigDef.Importance.HIGH,
             "If true, only stream into <table>_INGEST: no MERGE, no DELETE and no cleanup job. "
                 + "Deduplication is left to Snowflake (e.g. a Dynamic Table).")
-        .define(CFG_PROFILE, ConfigDef.Type.STRING, PROFILE_CDC_SCHEMA, ConfigDef.Importance.HIGH,
-            "Record profile. 'cdc_schema' (the default) reads a Debezium envelope carrying a schema: "
-                + "the operation from its 'op' field and the row from 'after'/'before'. 'flat_json' "
-                + "reads the row itself from a flat JSON value and the operation from the '"
-                + CFG_OP_HEADER + "' header, with the key holding the key columns in JSON.")
+        .define(CFG_PROFILE, ConfigDef.Type.STRING, PROFILE_AUTO, ConfigDef.Importance.MEDIUM,
+            "Record format. 'auto' (the default) detects it per record and needs no configuration: "
+                + "a Struct whose schema has 'op' next to 'before'/'after' is a Debezium envelope, "
+                + "anything else is a flat JSON row with the operation in the '" + CFG_OP_HEADER
+                + "' header. Set 'cdc_schema' or 'flat_json' to turn the detection off and reject "
+                + "anything that is not that shape.")
         .define(CFG_OP_HEADER, ConfigDef.Type.STRING, "op", ConfigDef.Importance.MEDIUM,
             "Header carrying the operation (r, c, u or d) in the 'flat_json' profile. Matched "
                 + "case-insensitively. Ignored by 'cdc_schema'.")
@@ -154,9 +157,10 @@ public class SnowflakeSinkConnector extends SinkConnector {
             List.of("IH_TOPIC", "IH_PARTITION", "IH_OFFSET", "IH_OP", "IH_DATETIME", "IH_BLOCKID",
                 "IH_SCHEMA", "IH_TABLE"),
             ConfigDef.Importance.HIGH,
-            "Ingest-table columns that do not exist in the final table. IH_SCHEMA and IH_TABLE are "
-                + "only filled by the 'flat_json' profile, from the headers of the same name, and "
-                + "only when the ingest table has those columns.")
+            "Ingest-table columns that do not exist in the final table. Names the ingest table does "
+                + "not actually have are ignored, so the default can list columns like IH_BLOCKID, "
+                + "IH_SCHEMA and IH_TABLE that only some tables carry. IH_SCHEMA and IH_TABLE are "
+                + "filled from the headers of the same name, and only for a flat JSON record.")
         .define(CFG_CONSUMER_OVERRIDE_MAX_POLL_RECORDS, ConfigDef.Type.INT, 500,
             ConfigDef.Importance.MEDIUM,
             "Limits the records KafkaConsumer retrieves from the broker before they reach the connector.")

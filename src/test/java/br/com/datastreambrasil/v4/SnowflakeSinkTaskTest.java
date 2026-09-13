@@ -330,6 +330,33 @@ class SnowflakeSinkTaskTest {
     }
 
     @Test
+    void anExcludedColumnTheIngestTableDoesNotHaveIsLeftOutOfTheStatement() throws SQLException {
+        // Snowflake refuses the whole MERGE when SELECT * EXCLUDE names a column that is not
+        // there, so an ingest table without IH_BLOCKID could never be merged into
+        when(jdbc.columnsOf(anyString(), anyBoolean(), anyList()))
+                .thenReturn(List.of("ID", "NAME", "IH_TOPIC", "IH_PARTITION", "IH_OFFSET", "IH_OP",
+                        "IH_DATETIME"));
+
+        var task = task(Map.of("ingestion_only", "false"));
+        task.put(List.of(record("c", "1", 0L)));
+        snowflakeHasUpTo(0L);
+        task.preCommit(Map.of(TP, new OffsetAndMetadata(1L)));
+
+        verify(statement).executeLargeUpdate(matches("(?s).*EXCLUDE \\(IH_TOPIC,IH_PARTITION,IH_OFFSET,IH_OP,IH_DATETIME\\).*"));
+    }
+
+    @Test
+    void withNothingConfiguredBothFormatsGoThroughTheSameTask() {
+        // no 'profile' in the config at all: the default detects each record
+        var task = task(Map.of("ingestion_only", "true"));
+
+        task.put(List.of(record("c", "1", 0L), flatRecord("c", "2", true, 1L),
+                record("d", "3", 2L), flatRecord("d", "4", true, 3L)));
+
+        verify(channels, times(4)).appendRow(eq(TP), anyMap(), anyLong());
+    }
+
+    @Test
     void flatJsonProfileStreamsAndMergesOnTheKeyFromTheRecord() throws SQLException {
         var task = task(Map.of("profile", "flat_json", "ingestion_only", "false"));
 

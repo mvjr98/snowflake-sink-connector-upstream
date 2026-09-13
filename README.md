@@ -60,16 +60,22 @@ everything.
 
 ### Record formats
 
-`profile` decides how a record is read. Both formats land in the same ingest table with the same
-`IH_*` metadata, so everything downstream — MERGE, cleanup job, Dynamic Table — is unchanged.
+Two formats are read, and **neither has to be configured**: the connector works out which one a
+record is, per record. Both land in the same ingest table with the same `IH_*` metadata, so
+everything downstream — MERGE, cleanup job, Dynamic Table — is unchanged.
 
-**`cdc_schema` (the default)** — a Debezium envelope carrying a schema, as produced by the Avro
-converter or by the JSON converter with a schema registry. The operation comes from the envelope's
-`op` field, the row from `after` (`before` on a delete), and the primary key from the record's key
-schema.
+The detection is not a guess. A Debezium envelope always arrives as a `Struct` whose schema carries
+`op` next to `before`/`after`; no converter produces that by accident. Anything else — a `Map` from
+`JsonConverter` with `schemas.enable=false`, JSON text, JSON bytes, a flat `Struct` — is the row
+itself, and then the operation comes from the header. `profile` pins it to `cdc_schema` or
+`flat_json` when you would rather reject anything that is not the expected shape.
 
-**`flat_json`** (since 4.0.4) — the row itself as a flat JSON object in the value, and the
-operation in a Kafka header. This is the format described in
+**Debezium envelope** (`cdc_schema`) — as produced by the Avro converter or by the JSON converter
+with a schema registry. The operation comes from the envelope's `op` field, the row from `after`
+(`before` on a delete), and the primary key from the record's key schema.
+
+**Flat JSON** (`flat_json`, since 4.0.4) — the row itself as a flat JSON object in the value, and
+the operation in a Kafka header. This is the format described in
 [docs.inthub.io/outputs/snowflake](https://docs.inthub.io/outputs/snowflake):
 
 | Part | Content |
@@ -85,8 +91,9 @@ Value:   {"ID":42,"CLIENTE":"ACME","TOTAL":249.90,"ATUALIZADO_EM":"2026-07-26T11
 Headers: op=u  schema=dbo  table=pedidos
 ```
 
+The only thing this format needs in the connector definition is the converter — no `profile`:
+
 ```yaml
-profile: "flat_json"
 key.converter: "org.apache.kafka.connect.json.JsonConverter"
 key.converter.schemas.enable: "false"
 value.converter: "org.apache.kafka.connect.json.JsonConverter"
@@ -123,7 +130,7 @@ value.converter.schemas.enable: "false"
 | `role` | string | user's default | Streaming session only, never sent over JDBC |
 | `streaming_url` | string | `https://<host of url>:443` | Only when the streaming endpoint differs from the JDBC one |
 | `ingestion_only` | boolean | `false` | Stream into `_INGEST` only: no MERGE, no cleanup job |
-| `profile` | string | `cdc_schema` | Record format: `cdc_schema` or `flat_json` |
+| `profile` | string | `auto` | Record format. `auto` detects it per record; `cdc_schema` or `flat_json` pin it |
 | `op_header` | string | `op` | Header carrying the operation; `flat_json` only |
 | `pk_fields` | list | empty | Primary key columns. Empty means the record key names them |
 | `pipe` | string | `<table>_INGEST-STREAMING` | Override to use a custom pipe |
@@ -134,7 +141,7 @@ value.converter.schemas.enable: "false"
 | `fail_on_row_error` | boolean | `true` | Fail the task when the pipe rejects rows, as v3's COPY did |
 | `find_columns_in_metadata` | boolean | `false` | Same meaning and default as v3 |
 | `ignore_columns` | list | empty | Ingest-table columns never written to |
-| `exclude_ingest_additional_fields` | list | the `IH_*` columns | Ingest columns absent from the final table |
+| `exclude_ingest_additional_fields` | list | the `IH_*` columns | Ingest columns absent from the final table. Names the ingest table does not have are ignored |
 | `timestamp_fields_convert` | list | empty | Columns whose epoch-millis value becomes a `LocalDateTime` |
 | `date_fields_convert` | list | empty | Columns whose epoch-days value becomes a `LocalDate` |
 | `time_fields_convert` | list | empty | Columns whose nanos-of-day value becomes a `LocalTime` |

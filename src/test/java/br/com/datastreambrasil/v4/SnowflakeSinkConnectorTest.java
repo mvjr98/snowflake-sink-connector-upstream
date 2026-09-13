@@ -64,15 +64,16 @@ class SnowflakeSinkConnectorTest {
     }
 
     @Test
-    void theFlatJsonProfileIsDeclaredWithoutChangingTheDefault() {
+    void neitherRecordFormatHasToBeConfigured() {
         var keys = SnowflakeSinkConnector.CONFIG_DEF.names();
 
         assertTrue(keys.contains("profile"));
         assertTrue(keys.contains("op_header"));
         assertTrue(keys.contains("pk_fields"));
 
-        // an existing Debezium connector definition must keep working untouched
-        assertEquals("cdc_schema",
+        // the whole point: a connector definition says nothing about the format, and both a
+        // Debezium envelope and a flat JSON row work
+        assertEquals("auto",
                 SnowflakeSinkConnector.CONFIG_DEF.configKeys().get("profile").defaultValue);
         assertEquals("op",
                 SnowflakeSinkConnector.CONFIG_DEF.configKeys().get("op_header").defaultValue);

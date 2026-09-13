@@ -113,6 +113,19 @@ class MergeExecutorTest {
     }
 
     @Test
+    void withNothingToExcludeItSelectsAPlainStar() {
+        // Snowflake rejects EXCLUDE (), so an ingest table whose columns all exist in the final
+        // table has to select * instead
+        var noExtras = new MergeExecutor(mock(Connection.class), "EVENTS", "EVENTS_INGEST",
+                List.of("ID", "NAME"), List.of());
+
+        var sql = noExtras.buildMergeSql(RANGE, List.of("ID"));
+
+        assertTrue(sql.contains("SELECT * FROM"), sql);
+        assertTrue(!sql.contains("EXCLUDE"), sql);
+    }
+
+    @Test
     void deleteDeduplicatesTheRangeBeforeFilteringByOperation() {
         var sql = executor.buildDeleteSql(RANGE, List.of("ID"));
 
