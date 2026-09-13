@@ -128,6 +128,17 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.5.2</version>
+                <configuration>
+                    <!--
+                      The temporal conversions read the JVM's default timezone, by design: that is
+                      what v3 did, and changing it would shift existing values on a v3 -> v4
+                      migration. So the v3 tests assert timestamps in the timezone they were
+                      written in, and pass or fail depending on where the build runs - green on a
+                      developer machine in Brazil, red on a CI runner in UTC. Pinning it here makes
+                      the build say the same thing everywhere.
+                    -->
+                    <argLine>-Duser.timezone=America/Sao_Paulo</argLine>
+                </configuration>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
