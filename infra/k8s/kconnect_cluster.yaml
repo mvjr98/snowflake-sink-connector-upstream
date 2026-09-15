@@ -121,7 +121,8 @@ spec:
       - name: snowflake-sink-connector-v4
         artifacts:
           - type: jar
-            url: https://github.com/mvjr98/snowflake-sink-connector-v4/releases/download/v4.0.4/snowflake-sink-connector-4.0.4.jar
+            # resolves once v4.0.4 is tagged in this repository, which cuts the release
+            url: https://github.com/datastreambrasil/snowflake-sink-connector/releases/download/v4.0.4/snowflake-sink-connector-4.0.4.jar
           # keep only if your connector configs actually use these transforms
           - type: jar
             url: https://github.com/datastreambrasil/smt/releases/download/v1.0.2/smt-1.0.2.jar
